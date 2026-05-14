@@ -32,7 +32,7 @@ extern "C" void app_main(void) {
     uint8_t read_value = 0;
     ret                = nvs_get_u8(my_handle, "PhotPainterMode", &read_value);
     if (ret != ESP_OK) {
-        ret = nvs_set_u8(my_handle, "PhotPainterMode", 0x03);
+        ret = nvs_set_u8(my_handle, "PhotPainterMode", 0x01);
         ESP_ERROR_CHECK(ret);
         nvs_commit(my_handle); //Submit the revisions
         ret = nvs_get_u8(my_handle, "PhotPainterMode", &read_value);

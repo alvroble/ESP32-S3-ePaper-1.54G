@@ -146,6 +146,7 @@ static void pwr_button_user_Task(void *arg) {
                 is_vabtflag = true;
             }
         }
+        vTaskDelay(pdMS_TO_TICKS(20)); 
     }
 }
 
