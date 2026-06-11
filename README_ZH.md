@@ -4,8 +4,8 @@
 
 ESP32-S3-ePaper-1.54G 是微雪推出的一款墨水屏 AIoT 开发板，搭载 ESP32-S3-PICO-1-N8R8，采用最高 240 MHz 的双核 Xtensa LX7 处理器，集成 8 MB Flash 和 8 MB PSRAM，支持 2.4 GHz Wi-Fi 与 蓝牙 5 (LE)。板载 1.54 英寸 200 x 200 红、黄、黑、白四色电子墨水屏，并集成 ES8311 音频编解码芯片、麦克风、扬声器、SHTC3 温湿度传感器、PCF85063 RTC、Micro SD 卡槽、USB Type-C 接口及锂电池接口，适用于低功耗信息显示、环境监测、语音交互及其他物联网应用。
 
+- [购买链接](https://www.waveshare.net/shop/ESP32-S3-ePaper-1.54G.htm)
 - [产品文档](https://docs.waveshare.net/ESP32-S3-ePaper-1.54G/)
-- [GitHub 仓库](https://github.com/waveshareteam/ESP32-S3-ePaper-1.54G)
 
 <img src="assets/ESP32-S3-ePaper-1.54G-1.jpg" alt="Waveshare ESP32-C6-GEEK" width="500">
 
