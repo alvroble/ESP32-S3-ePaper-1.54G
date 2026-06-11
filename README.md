@@ -7,7 +7,7 @@ The ESP32-S3-ePaper-1.54G is an e-paper AIoT development board built around the 
 - [Product Documentation](https://docs.waveshare.com/ESP32-S3-ePaper-1.54G/)
 - [GitHub Repository](https://github.com/waveshareteam/ESP32-S3-ePaper-1.54G)
 
-<img src="https://www.waveshare.net/photo/LCD/ESP32-S3-ePaper-1.54G/ESP32-S3-ePaper-1.54G-1.jpg" alt="Waveshare ESP32-S3-ePaper-1.54G" width="500">
+<img src="assets/ESP32-S3-ePaper-1.54G-1.jpg" alt="Waveshare ESP32-C6-GEEK" width="500">
 
 ## Repository Structure
 
