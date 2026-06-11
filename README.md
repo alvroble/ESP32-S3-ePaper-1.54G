@@ -4,8 +4,8 @@
 
 The ESP32-S3-ePaper-1.54G is an e-paper AIoT development board built around the ESP32-S3-PICO-1-N8R8, featuring a dual-core Xtensa LX7 processor running at up to 240 MHz, 8 MB Flash, 8 MB PSRAM, 2.4 GHz Wi-Fi, and Bluetooth 5 (LE). It integrates a 1.54-inch 200 x 200 four-color e-paper display (red, yellow, black, and white), an ES8311 audio codec, an onboard microphone and speaker, an SHTC3 temperature and humidity sensor, a PCF85063 RTC, a Micro SD card slot, USB Type-C, and a lithium battery interface. The board is suitable for low-power information displays, environmental monitoring, voice interaction, and other IoT applications.
 
-- [Product Documentation](https://docs.waveshare.com/ESP32-S3-ePaper-1.54G/)
-- [GitHub Repository](https://github.com/waveshareteam/ESP32-S3-ePaper-1.54G)
+- [Purchase Link](https://www.waveshare.com/ESP32-S3-ePaper-1.54G.htm)
+- [Documentation](https://docs.waveshare.com/ESP32-S3-ePaper-1.54G)
 
 <img src="assets/ESP32-S3-ePaper-1.54G-1.jpg" alt="Waveshare ESP32-C6-GEEK" width="500">
 
