@@ -1,132 +1,196 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include "EPD_1in54g.h"
 #include "GUI_Paint.h"
 #include "fonts.h"
 #include "ImageData.h"
 
-void setup() {
-printf("EPD_2IN15G_test Demo\r\n");
-    if(DEV_Module_Init()!=0){
+#define UPDATE_INTERVAL_MS  (10UL * 60UL * 1000UL)
+
+static const char* WIFI_SSID     = "BOOX24";
+static const char* WIFI_PASSWORD = "Jw4iKrgbX9JB";
+
+static const char* BTC_URL = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT";
+
+static UBYTE *BlackImage;
+static UWORD Imagesize;
+
+static unsigned long lastUpdate = 0;
+static float lastPrice = 0.0f;
+
+static float fetchBTCPrice(void)
+{
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    float price = NAN;
+
+    http.setTimeout(10000);
+    http.begin(client, BTC_URL);
+    int httpCode = http.GET();
+
+    if (httpCode == HTTP_CODE_OK) {
+        String body = http.getString();
+        int idx = body.indexOf("\"price\":\"");
+        if (idx >= 0) {
+            int start = idx + 9;
+            int end   = body.indexOf("\"", start);
+            if (end > start) {
+                price = body.substring(start, end).toFloat();
+            }
+        }
+    } else {
+        printf("BTC fetch failed, HTTP %d\n", httpCode);
+    }
+
+    http.end();
+    return price;
+}
+
+static int textWidth(const char *s, sFONT *font)
+{
+    int len = (int)strlen(s);
+    return len * font->Width;
+}
+
+static void drawBtcScreen(float price, unsigned long ageSec)
+{
+    Paint_SelectImage(BlackImage);
+    Paint_Clear(EPD_1IN54G_WHITE);
+
+    Paint_DrawRectangle(0, 0, EPD_1IN54G_WIDTH - 1, 28, EPD_1IN54G_RED,
+                        DOT_PIXEL_1X1, DRAW_FILL_FULL);
+    const char *title = "BTC / USD";
+    int titleW = textWidth(title, &Font16);
+    Paint_DrawString_EN((EPD_1IN54G_WIDTH - titleW) / 2, 6, title, &Font16,
+                        EPD_1IN54G_WHITE, EPD_1IN54G_RED);
+
+    Paint_DrawString_EN(10, 34, "Bitcoin live price", &Font12,
+                        EPD_1IN54G_BLACK, EPD_1IN54G_WHITE);
+
+    char priceBuf[24];
+    dtostrf(price, 0, 2, priceBuf);
+    char fullPrice[28];
+    snprintf(fullPrice, sizeof(fullPrice), "$%s", priceBuf);
+
+    sFONT *priceFont = (strlen(fullPrice) > 11) ? &Font20 : &Font24;
+    int priceW = textWidth(fullPrice, priceFont);
+    int priceX = (EPD_1IN54G_WIDTH - priceW) / 2;
+    Paint_DrawString_EN(priceX, 60, fullPrice, priceFont,
+                        EPD_1IN54G_BLACK, EPD_1IN54G_WHITE);
+
+    Paint_DrawLine(10, 110, EPD_1IN54G_WIDTH - 10, 110,
+                   EPD_1IN54G_BLACK, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
+
+    char ageBuf[40];
+    if (ageSec == 0) {
+        snprintf(ageBuf, sizeof(ageBuf), "Just updated");
+    } else {
+        unsigned long min = ageSec / 60;
+        unsigned long sec = ageSec % 60;
+        snprintf(ageBuf, sizeof(ageBuf), "Updated %lu m %02lu s ago", min, sec);
+    }
+    Paint_DrawString_EN(10, 118, ageBuf, &Font12,
+                        EPD_1IN54G_BLACK, EPD_1IN54G_WHITE);
+
+    Paint_DrawRectangle(0, EPD_1IN54G_HEIGHT - 22, EPD_1IN54G_WIDTH - 1,
+                        EPD_1IN54G_HEIGHT - 1, EPD_1IN54G_YELLOW,
+                        DOT_PIXEL_1X1, DRAW_FILL_FULL);
+    Paint_DrawString_EN(10, EPD_1IN54G_HEIGHT - 17, "Refresh every 10 min",
+                        &Font12, EPD_1IN54G_BLACK, EPD_1IN54G_YELLOW);
+
+    EPD_1IN54G_Init_Fast();
+    EPD_1IN54G_Display(BlackImage);
+}
+
+static void drawErrorScreen(const char *msg)
+{
+    Paint_SelectImage(BlackImage);
+    Paint_Clear(EPD_1IN54G_WHITE);
+
+    Paint_DrawRectangle(0, 0, EPD_1IN54G_WIDTH - 1, 28, EPD_1IN54G_RED,
+                        DOT_PIXEL_1X1, DRAW_FILL_FULL);
+    Paint_DrawString_EN(10, 6, "BTC / USD", &Font16,
+                        EPD_1IN54G_WHITE, EPD_1IN54G_RED);
+
+    Paint_DrawString_EN(10, 70, "Fetch error", &Font24,
+                        EPD_1IN54G_RED, EPD_1IN54G_WHITE);
+    Paint_DrawString_EN(10, 110, msg, &Font12,
+                        EPD_1IN54G_BLACK, EPD_1IN54G_WHITE);
+
+    EPD_1IN54G_Init_Fast();
+    EPD_1IN54G_Display(BlackImage);
+}
+
+static void connectWifi(void)
+{
+    printf("Connecting to %s", WIFI_SSID);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        printf(".");
+    }
+    printf("\nWiFi connected, IP: %s\n", WiFi.localIP().toString().c_str());
+}
+
+void setup()
+{
+    printf("EPD_1IN54G BTC ticker\r\n");
+
+    if (DEV_Module_Init() != 0) {
         DEV_Module_Exit();
-        while(1);
+        while (1);
     }
 
     printf("e-Paper Init and Clear...\r\n");
     EPD_1IN54G_Init();
-    EPD_1IN54G_Clear(EPD_1IN54G_WHITE); // White
-    DEV_Delay_ms(2000);
-
-    //Create a new image cache
-    UBYTE *BlackImage;
-    UWORD Imagesize = ((EPD_1IN54G_WIDTH % 4 == 0)? (EPD_1IN54G_WIDTH / 4 ): (EPD_1IN54G_WIDTH / 4 + 1)) * EPD_1IN54G_HEIGHT;
-    if((BlackImage = (UBYTE *)malloc(Imagesize)) == NULL) {
-        printf("Failed to apply for black memory...\r\n");
-        while(1);
-    }
-    printf("Paint_NewImage\r\n");
-    Paint_NewImage(BlackImage, EPD_1IN54G_WIDTH, EPD_1IN54G_HEIGHT, 90, EPD_1IN54G_WHITE);
-    Paint_SetScale(4);
-
-#if 1   // show bmp
-    printf("show BMP-----------------\r\n");
-    EPD_1IN54G_Display(Image4color);
-    DEV_Delay_ms(2000);
-#endif
-
-#if 1   // Drawing on the image
-    //1.Select Image
-    EPD_1IN54G_Init_Fast();
-    printf("SelectImage:BlackImage\r\n");
-    Paint_NewImage(BlackImage, EPD_1IN54G_WIDTH, EPD_1IN54G_HEIGHT, 0, EPD_1IN54G_WHITE);
-    Paint_SetScale(4);
-    Paint_SelectImage(BlackImage);
-    Paint_Clear(EPD_1IN54G_WHITE);
-
-    // 2.Drawing on the image
-    printf("Drawing:BlackImage\r\n");
-    Paint_DrawPoint(10, 80, EPD_1IN54G_RED, DOT_PIXEL_1X1, DOT_STYLE_DFT);
-    Paint_DrawPoint(10, 90, EPD_1IN54G_YELLOW, DOT_PIXEL_2X2, DOT_STYLE_DFT);
-    Paint_DrawPoint(10, 100, EPD_1IN54G_BLACK, DOT_PIXEL_3X3, DOT_STYLE_DFT);
-    Paint_DrawLine(20, 70, 70, 120, EPD_1IN54G_RED, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
-    Paint_DrawLine(70, 70, 20, 120, EPD_1IN54G_RED, DOT_PIXEL_1X1, LINE_STYLE_SOLID);
-    Paint_DrawRectangle(20, 70, 70, 120, EPD_1IN54G_YELLOW, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-    Paint_DrawRectangle(80, 70, 130, 120, EPD_1IN54G_YELLOW, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawCircle(45, 95, 20, EPD_1IN54G_BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-    Paint_DrawCircle(105, 95, 20, EPD_1IN54G_BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawLine(85, 95, 125, 95, EPD_1IN54G_RED, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
-    Paint_DrawLine(105, 75, 105, 115, EPD_1IN54G_YELLOW, DOT_PIXEL_1X1, LINE_STYLE_DOTTED);
-    Paint_DrawString_EN(10, 0, "Red,yellow,", &Font16, EPD_1IN54G_RED, EPD_1IN54G_YELLOW);
-    Paint_DrawString_EN(10, 20, "white and black", &Font16, EPD_1IN54G_RED, EPD_1IN54G_YELLOW);
-    Paint_DrawString_EN(10, 40, "Four color e-Paper", &Font12, EPD_1IN54G_YELLOW, EPD_1IN54G_BLACK);
-    Paint_DrawString_CN(10, 150, "微雪电子", &Font24CN, EPD_1IN54G_RED, EPD_1IN54G_WHITE);
-    Paint_DrawNum(10, 135, 123456, &Font12, EPD_1IN54G_RED, EPD_1IN54G_WHITE);
-
-    printf("EPD_Display\r\n");
-    EPD_1IN54G_Display(BlackImage);
-    DEV_Delay_ms(3000);
-#endif
-
-    Paint_NewImage(BlackImage, EPD_1IN54G_WIDTH, EPD_1IN54G_HEIGHT, 0, EPD_1IN54G_WHITE);
-    Paint_SetScale(4);
-
-#if 1   // Drawing on the image
-    //1.Select Image
-    printf("SelectImage:BlackImage\r\n");
-    Paint_SelectImage(BlackImage);
-    Paint_Clear(EPD_1IN54G_WHITE);
-
-    // 2.Drawing on the image
-    printf("Drawing:BlackImage\r\n");
-    Paint_DrawRectangle(1, 1, EPD_1IN54G_WIDTH, EPD_1IN54G_HEIGHT/4, EPD_1IN54G_RED, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawRectangle(1, EPD_1IN54G_HEIGHT/4, EPD_1IN54G_WIDTH, EPD_1IN54G_HEIGHT/2, EPD_1IN54G_YELLOW, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-    Paint_DrawRectangle(1, EPD_1IN54G_HEIGHT/2, EPD_1IN54G_WIDTH, EPD_1IN54G_HEIGHT/4*3, EPD_1IN54G_BLACK, DOT_PIXEL_1X1, DRAW_FILL_FULL);
-
-    printf("EPD_Display\r\n");
-    EPD_1IN54G_Display(BlackImage);
-    DEV_Delay_ms(3000);
-#endif
-
-#if 1   // Drawing on the image
-    //1.Select Image
-    printf("SelectImage:BlackImage\r\n");
-    Paint_SelectImage(BlackImage);
-    Paint_Clear(EPD_1IN54G_WHITE);
-
-    int hNumber, hWidth, vNumber, vWidth;
-    hNumber = 20;
-	hWidth = EPD_1IN54G_HEIGHT/hNumber;
-    vNumber = 8;
-	vWidth = EPD_1IN54G_WIDTH/vNumber;
-
-    // 2.Drawing on the image
-    printf("Drawing:BlackImage\r\n");
-	for(int i=0; i<hNumber; i++) {  // horizontal
-		Paint_DrawRectangle(1, 1+i*hWidth, EPD_1IN54G_WIDTH, hWidth*(1+i), EPD_1IN54G_BLACK + (i % 2), DOT_PIXEL_1X1, DRAW_FILL_FULL);
-	}
-	for(int i=0; i<vNumber; i++) {  // vertical
-        if(i%2) {
-            Paint_DrawRectangle(1+i*vWidth, 1, vWidth*(i+1), EPD_1IN54G_HEIGHT, EPD_1IN54G_YELLOW + (i/2%2), DOT_PIXEL_1X1, DRAW_FILL_FULL);
-        }
-	}
-    printf("EPD_Display\r\n");
-    EPD_1IN54G_Display(BlackImage);
-    DEV_Delay_ms(3000);
-#endif
-
-    printf("Clear...\r\n");
-    EPD_1IN54G_Init();
     EPD_1IN54G_Clear(EPD_1IN54G_WHITE);
+    DEV_Delay_ms(2000);
 
-    printf("Goto Sleep...\r\n");
-    EPD_1IN54G_Sleep();
-    free(BlackImage);
-    BlackImage = NULL;
-    DEV_Delay_ms(2000);//important, at least 2s
-    // close 5V
-    printf("close 5V, Module enters 0 power consumption ...\r\n");
-    DEV_Module_Exit();
+    Imagesize = ((EPD_1IN54G_WIDTH % 4 == 0) ? (EPD_1IN54G_WIDTH / 4)
+                                             : (EPD_1IN54G_WIDTH / 4 + 1))
+                * EPD_1IN54G_HEIGHT;
+    BlackImage = (UBYTE *)malloc(Imagesize);
+    if (BlackImage == NULL) {
+        printf("malloc failed\r\n");
+        while (1);
+    }
+
+    Paint_NewImage(BlackImage, EPD_1IN54G_WIDTH, EPD_1IN54G_HEIGHT, 0,
+                   EPD_1IN54G_WHITE);
+    Paint_SetScale(4);
+
+    connectWifi();
+
+    float price = fetchBTCPrice();
+    lastUpdate = millis();
+    if (!isnan(price) && price > 0.0f) {
+        lastPrice = price;
+        drawBtcScreen(price, 0);
+    } else {
+        drawErrorScreen("Check WiFi / API");
+    }
 }
 
+void loop()
+{
+    unsigned long now = millis();
+    if (now - lastUpdate >= UPDATE_INTERVAL_MS) {
+        float price = fetchBTCPrice();
+        lastUpdate = now;
+        if (!isnan(price) && price > 0.0f) {
+            lastPrice = price;
+            drawBtcScreen(price, 0);
+        } else {
+            drawErrorScreen("Check WiFi / API");
+        }
+    }
 
-void loop() {
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.reconnect();
+    }
 
+    delay(1000);
 }

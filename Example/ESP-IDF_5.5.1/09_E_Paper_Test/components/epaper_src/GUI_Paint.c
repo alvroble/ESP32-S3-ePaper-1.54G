@@ -192,9 +192,9 @@ parameter:
 void Paint_SetPixel(UWORD Xpoint, UWORD Ypoint, UWORD Color)
 {
     if(Xpoint > Paint.Width || Ypoint > Paint.Height){
-        ESP_LOGI(TAG,"Exceeding display boundaries");
+        ESP_LOGV(TAG,"Exceeding display boundaries");
         return;
-    }      
+    }
     UWORD X, Y;
     switch(Paint.Rotate) {
     case 0:
@@ -235,7 +235,7 @@ void Paint_SetPixel(UWORD Xpoint, UWORD Ypoint, UWORD Color)
     }
 
     if(X > Paint.WidthMemory || Y > Paint.HeightMemory){
-        ESP_LOGI(TAG,"Exceeding display boundaries");
+        ESP_LOGV(TAG,"Exceeding display boundaries");
         return;
     }
     
