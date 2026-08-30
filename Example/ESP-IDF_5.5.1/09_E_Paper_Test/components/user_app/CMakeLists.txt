@@ -10,7 +10,9 @@ idf_component_register(
     nvs_flash
     esp_netif
     lwip
+    esp_adc
   REQUIRES
     epaper_src
     epaper_port
+    lvgl_epaper_port
     INCLUDE_DIRS ".")

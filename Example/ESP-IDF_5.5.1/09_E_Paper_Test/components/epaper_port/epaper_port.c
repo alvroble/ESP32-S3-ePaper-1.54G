@@ -158,9 +158,13 @@ static void epaper_TurnOnDisplay(void) {
 epaper init
 */
 void epaper_port_init(void) {
-    epaper_spi_init();  //spi init
-    epaper_gpio_init(); //ws gpio init
-    epaper_reset();     //reset
+    static bool s_spi_inited = false;
+    if (!s_spi_inited) {
+        epaper_spi_init();  // one-time: SPI bus + device
+        s_spi_inited = true;
+    }
+    epaper_gpio_init(); //ws gpio init (idempotent)
+    epaper_reset();     //reset pulse (ePaper may have lost state during power-off)
 
     epaper_SendCommand(0x4D);
     epaper_SendData(0x78);

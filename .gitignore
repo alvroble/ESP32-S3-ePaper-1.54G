@@ -1,3 +1,9 @@
 # ESP-IDF build artifacts
-Example/ESP-IDF_5.5.1/09_E_Paper_Test/build/
-Example/ESP-IDF_5.5.1/09_E_Paper_Test/sdkconfig.old
+build/
+**/build/
+managed_components/
+**/managed_components/
+sdkconfig.old
+**/sdkconfig.old
+.DS_Store
+**/.DS_Store
