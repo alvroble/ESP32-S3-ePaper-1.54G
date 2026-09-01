@@ -60,6 +60,13 @@ typedef struct {
     int count;
 } btc_market_data_t;
 
+// Cache of the last successful market data fetch. Survives deep sleep
+// (RTC slow memory); lost on power cycle. Used to keep the UI useful
+// when both Coinbase and CoinGecko are unreachable on a given cycle.
+RTC_DATA_ATTR static btc_market_data_t s_last_good = { 0 };
+RTC_DATA_ATTR static time_t s_last_success = 0;
+#define CACHE_MIN_CANDLES 12  // minimum candles required for cache to be usable
+
 // Provider abstraction: each price source has its own URL and JSON schema,
 // so each carries its own parser. Tried in order; first success wins.
 typedef bool (*market_parser_fn)(const char *body, btc_market_data_t *out);
@@ -574,7 +581,7 @@ static void build_ui(void)
     lv_obj_align(s_batt_label, LV_ALIGN_RIGHT_MID, -6, 0);
 }
 
-static void update_ui_market_data(const btc_market_data_t *data)
+static void update_ui_market_data(const btc_market_data_t *data, bool is_stale)
 {
     char buf[64];
 
@@ -630,11 +637,25 @@ static void update_ui_market_data(const btc_market_data_t *data)
     lv_label_set_text(s_high_label, buf);
     lv_obj_align(s_high_label, LV_ALIGN_TOP_RIGHT, -8, 156);
 
-    // 6. Footer Timestamp (explicit UTC)
-    time_t now = time(NULL);
-    struct tm tm_utc;
-    gmtime_r(&now, &tm_utc);
-    snprintf(buf, sizeof(buf), "%02d:%02d UTC", tm_utc.tm_hour, tm_utc.tm_min);
+    // 6. Footer Timestamp (explicit UTC). When data is stale (served from
+    //    RTC cache because every provider failed), prefix "STALE" and switch
+    //    the text to e-paper red so the user immediately sees the data is
+    //    older than the current cycle.
+    struct tm tm_data;
+    time_t time_to_show = is_stale ? s_last_success : time(NULL);
+    gmtime_r(&time_to_show, &tm_data);
+
+    if (is_stale) {
+        snprintf(buf, sizeof(buf), "STALE %02d:%02d UTC",
+                 tm_data.tm_hour, tm_data.tm_min);
+        // Pure red in RGB565 → e-paper red (saturation 255, well above the
+        // 45 threshold in the conversion algorithm).
+        lv_obj_set_style_text_color(s_status_label, lv_color_hex(0xFF0000), 0);
+    } else {
+        snprintf(buf, sizeof(buf), "%02d:%02d UTC",
+                 tm_data.tm_hour, tm_data.tm_min);
+        lv_obj_set_style_text_color(s_status_label, lv_color_white(), 0);
+    }
     lv_label_set_text(s_status_label, buf);
     lv_obj_align(s_status_label, LV_ALIGN_LEFT_MID, 6, 0);
 
@@ -769,8 +790,20 @@ static void epd_refresh_task(void *arg)
         ESP_LOGI(TAG, "BTC = %.2f (24h: %.2f%%, High: %.2f, Low: %.2f, candles: %d)",
                  market_data.current_price, market_data.change_24h,
                  market_data.high_24h, market_data.low_24h, market_data.count);
-        update_ui_market_data(&market_data);
+        // Successful fetch: persist to RTC cache so the next wake can fall
+        // back to it if both providers are down.
+        s_last_good = market_data;
+        s_last_success = time(NULL);
+        update_ui_market_data(&s_last_good, false);
+    } else if (s_last_good.count >= CACHE_MIN_CANDLES && s_last_success > 0) {
+        // Fetch failed but we have a usable cache from a previous cycle.
+        time_t now = time(NULL);
+        long age_sec = (now > s_last_success) ? (long)(now - s_last_success) : 0;
+        ESP_LOGW(TAG, "all providers failed, using cached data (%ld min old)",
+                 age_sec / 60);
+        update_ui_market_data(&s_last_good, true);
     } else {
+        ESP_LOGE(TAG, "no data available (fetch failed, cache empty)");
         update_ui_status("Network error");
     }
 
