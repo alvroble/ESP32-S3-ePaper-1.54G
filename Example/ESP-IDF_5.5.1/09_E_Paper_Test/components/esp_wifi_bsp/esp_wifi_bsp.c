@@ -57,28 +57,41 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 
 void espwifi_Init(void)
 {
-    // ---- One-time init (first boot only) ----
-    // NVS, netif, event loop, default Wi-Fi STA netif, and event handlers
-    // all persist across deep sleep when not explicitly deinit'd. Re-creating
-    // them on every wake leaked memory and duplicated handlers, which is
-    // what caused the device to die after a few hours of 5-min cycles.
+    // ---- Idempotent inits: MUST run every wake ----
+    // Their in-RAM state is wiped by esp_restart() and may be wiped by
+    // some deep-sleep wake paths even though the flash data is preserved.
+    // Worse: s_wifi_bsd_initialized lives in RTC memory and can read as
+    // a stale non-zero value after a flash update (the old firmware had
+    // different RTC variables, so the linker-placed slot has garbage).
+    // Calling these unconditionally closes that hole.
+    //
+    // nvs_flash_init()                       -> ESP_OK if already init'd.
+    // esp_netif_init()                        -> ESP_OK if already init'd.
+    // esp_event_loop_create_default()         -> ESP_OK if loop exists.
+    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // ---- Non-idempotent inits: gated by RTC, but tolerant of stale flag ----
+    // These create new resources (a default STA netif, event handler
+    // instances). Calling them on every wake would leak. The RTC flag is
+    // our best-effort signal that we are on a "first boot per power cycle"
+    // but it is unreliable (see above). If the gate is wrong we use
+    // ESP_ERROR_CHECK_WITHOUT_ABORT so a "already exists" error from the
+    // underlying API does not crash the firmware -- it just logs and
+    // continues with whatever was there before.
     if (!s_wifi_bsd_initialized) {
-        ESP_ERROR_CHECK(nvs_flash_init());
-        ESP_ERROR_CHECK(esp_netif_init());
-        ESP_ERROR_CHECK(esp_event_loop_create_default());
-        esp_netif_create_default_wifi_sta();
-
-        esp_event_handler_instance_register(WIFI_EVENT,
-                                            ESP_EVENT_ANY_ID,
-                                            &event_handler,
-                                            NULL,
-                                            NULL);
-        esp_event_handler_instance_register(IP_EVENT,
-                                            IP_EVENT_STA_GOT_IP,
-                                            &event_handler,
-                                            NULL,
-                                            NULL);
-
+        // esp_netif_create_default_wifi_sta returns esp_netif_t*, not esp_err_t
+        // so we can't use ESP_ERROR_CHECK_WITHOUT_ABORT -- check explicitly.
+        if (esp_netif_create_default_wifi_sta() == NULL) {
+            ESP_LOGW(TAG, "default WiFi STA netif already exists (stale gate)");
+        }
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_instance_register(
+                WIFI_EVENT, ESP_EVENT_ANY_ID,
+                &event_handler, NULL, NULL));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_instance_register(
+                IP_EVENT, IP_EVENT_STA_GOT_IP,
+                &event_handler, NULL, NULL));
         s_wifi_bsd_initialized = true;
         ESP_LOGI(TAG, "one-time WiFi BSP init complete");
     }
