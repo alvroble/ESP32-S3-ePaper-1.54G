@@ -180,3 +180,20 @@ void lvgl_epaper_flush_to_epaper(void)
     // Push to ePaper
     epaper_port_display(s_epd_buf);
 }
+
+void lvgl_epaper_flush_to_epaper_partial(void)
+{
+    if (!s_epd_buf || !s_fb) return;
+
+    xSemaphoreTakeRecursive(s_mutex, portMAX_DELAY);
+    lv_timer_handler();
+    xSemaphoreGiveRecursive(s_mutex);
+
+    convert_fb_to_epd();
+
+    // Caller must have set partial mode already (epaper_port_setup_partial_mode).
+    // On the first refresh after a power-cycle, the controller's old-frame RAM
+    // is empty so the result may have artifacts -- that is why the higher
+    // level refresh scheduler always does a full refresh first.
+    epaper_port_display_partial(s_epd_buf);
+}

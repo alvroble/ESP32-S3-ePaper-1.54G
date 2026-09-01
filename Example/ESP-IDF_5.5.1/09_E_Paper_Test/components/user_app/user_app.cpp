@@ -679,8 +679,19 @@ static void update_ui_status(const char *msg)
     lv_label_set_text(s_status_label, msg);
 }
 
+// Most refresh cycles use the skip-clear path (no white pre-flash, just a
+// direct transition to the new image). Every Nth cycle we do a full refresh
+// (with white clear) to reset the panel and prevent ghost accumulation.
+#define FULL_REFRESH_INTERVAL 10
+RTC_DATA_ATTR static uint8_t s_refresh_count = 0;
+
 static void push_to_epaper(void)
 {
+    bool do_full_refresh = (s_refresh_count % FULL_REFRESH_INTERVAL) == 0;
+    s_refresh_count++;
+    ESP_LOGI(TAG, "epaper refresh #%u (%s)", (unsigned)s_refresh_count,
+             do_full_refresh ? "full + clear" : "skip-clear");
+
     // Let LVGL render the latest state
     vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -690,13 +701,25 @@ static void push_to_epaper(void)
     vTaskDelay(pdMS_TO_TICKS(50));
     epaper_port_init();
     vTaskDelay(pdMS_TO_TICKS(50));
-    epaper_port_clear(EPD_1IN54G_WHITE);
-    vTaskDelay(pdMS_TO_TICKS(2000));
 
-    // Push the LVGL-rendered frame
-    lvgl_epaper_flush_to_epaper();
+    if (do_full_refresh) {
+        // Full refresh: clear to white then display. Causes the visible
+        // white flash but resets the panel to a clean baseline, killing any
+        // ghosting that has built up since the last full cycle.
+        epaper_port_clear(EPD_1IN54G_WHITE);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        lvgl_epaper_flush_to_epaper();
+        vTaskDelay(pdMS_TO_TICKS(3000));
+    } else {
+        // Skip-clear refresh: the LVGL framebuffer overwrites every pixel,
+        // so an explicit white clear is unnecessary. Skipping it eliminates
+        // the white flash before the image update. The full-refresh waveform
+        // still produces a small settling flicker, but it is much less
+        // jarring than the flash-then-image transition.
+        lvgl_epaper_flush_to_epaper();
+        vTaskDelay(pdMS_TO_TICKS(3000));
+    }
 
-    vTaskDelay(pdMS_TO_TICKS(3000));
     epaper_port_sleep();
     epd_power_off();
 }

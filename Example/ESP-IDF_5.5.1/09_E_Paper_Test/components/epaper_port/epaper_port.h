@@ -39,6 +39,14 @@ void epaper_port_clear(uint8_t color);
 void epaper_port_display(const uint8_t *Image);
 void epaper_port_sleep(void);
 
+// Optional: SSD1681 partial refresh (Mode 2). Only meaningful when the
+// panel's OTP has a partial refresh LUT baked in. The 1.54G V2 panels
+// distributed by Waveshare do have one; the older 1.54G (non-V2) may not.
+// Caller is responsible for verifying on hardware before relying on this.
+void epaper_port_setup_partial_mode(void);
+void epaper_port_reset_full_mode(void);
+void epaper_port_display_partial(const uint8_t *Image);
+
 
 #ifdef __cplusplus
 }

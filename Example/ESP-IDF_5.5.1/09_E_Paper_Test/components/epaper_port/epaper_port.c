@@ -252,7 +252,7 @@ void epaper_port_display(const uint8_t *Image) {
 }
 
 /*
-sleep
+ sleep
 */
 void epaper_port_sleep(void) {
 
@@ -261,4 +261,76 @@ void epaper_port_sleep(void) {
     epaper_readbusyh();
     epaper_SendCommand(0x07);
     epaper_SendData(0xA5);
+}
+
+/*
+ * SSD1681 partial-refresh (Mode 2) control.
+ *
+ * The "Activate Display Update Sequence" register (0xE0) selects which
+ * mode the controller uses when a Display Refresh (0x12) command fires:
+ *
+ *   0x00 -> Mode 0: full refresh (~3s, dramatic flash, no ghosting)
+ *   0x02 -> Mode 2: partial refresh (~1s, no flash, ghosting accumulates)
+ *
+ * Caveat: Mode 2 needs a partial refresh waveform LUT. The SSD1681 ships
+ * with multiple LUTs in its OTP memory; the panel vendor chooses which one
+ * gets loaded by default. For the Waveshare 1.54G V2 panels the OTP partial
+ * LUT is enabled and these calls work. For other revisions the partial
+ * waveform may be missing and `display_partial()` will produce visual
+ * artifacts -- in that case do NOT call `setup_partial_mode()` and just
+ * keep using `display()` (full refresh).
+ *
+ * CDI (0x50) also differs between modes: 0x37 is the value used in
+ * `epaper_port_init()` for full refresh, 0xA9 is the typical partial value.
+ */
+void epaper_port_setup_partial_mode(void)
+{
+    // Mode 2 = partial refresh
+    epaper_SendCommand(0xE0);
+    epaper_SendData(0x02);
+    // CDI for partial waveform
+    epaper_SendCommand(0x50);
+    epaper_SendData(0xA9);
+}
+
+void epaper_port_reset_full_mode(void)
+{
+    // Mode 0 = full refresh
+    epaper_SendCommand(0xE0);
+    epaper_SendData(0x00);
+    // Restore CDI to the value set in epaper_port_init()
+    epaper_SendCommand(0x50);
+    epaper_SendData(0x37);
+}
+
+/*
+ * Partial display refresh: send new image data through DTM2 (0x13) instead
+ * of DTM1 (0x10), then trigger refresh. Caller MUST have called
+ * epaper_port_setup_partial_mode() earlier in the same power-on session.
+ *
+ * IMPORTANT: the SSD1681 partial-refresh waveform compares the new frame
+ * against the frame already latched in its RAM. Because we power-cycle the
+ * panel on every wake (`epd_power_off()` between cycles), the controller
+ * RAM is empty after each wake. The first partial refresh after wake will
+ * therefore compare against garbage and show artifacts. To get a clean
+ * partial update the caller should perform a full refresh first (which
+ * loads both old and new into RAM), and only use partial on subsequent
+ * refreshes within the same power-on session.
+ */
+void epaper_port_display_partial(const uint8_t *Image)
+{
+    uint16_t Width, Height;
+    Width  = (EXAMPLE_LCD_WIDTH % 4 == 0) ? (EXAMPLE_LCD_WIDTH / 4)
+                                          : (EXAMPLE_LCD_WIDTH / 4 + 1);
+    Height = EXAMPLE_LCD_HEIGHT;
+
+    // DTM2 (Display Start Transmission 2): new frame data
+    epaper_SendCommand(0x13);
+    for (int j = 0; j < Height; j++) {
+        for (int i = 0; i < Width; i++) {
+            epaper_SendData(Image[i + j * Width]);
+        }
+    }
+    // Trigger refresh (busy wait inside)
+    epaper_TurnOnDisplay();
 }

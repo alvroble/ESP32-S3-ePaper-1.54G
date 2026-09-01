@@ -23,6 +23,13 @@ void lvgl_epaper_tick(void);
 // Turns the ePaper on, displays, then powers it off.
 void lvgl_epaper_flush_to_epaper(void);
 
+// Render the current LVGL framebuffer to the ePaper using SSD1681 partial
+// refresh (Mode 2). Faster (~1s) and no white/black flash, but accumulates
+// ghosting over time so it must be interleaved with full refreshes.
+// Caller is responsible for calling epaper_port_setup_partial_mode() before
+// and epaper_port_reset_full_mode() after, if desired.
+void lvgl_epaper_flush_to_epaper_partial(void);
+
 #ifdef __cplusplus
 }
 #endif
