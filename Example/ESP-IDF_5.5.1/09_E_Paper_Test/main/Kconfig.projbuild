@@ -1,0 +1,18 @@
+menu "WiFi Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default ""
+        help
+            SSID of the WiFi network the ticker will connect to.
+            Set this via 'idf.py menuconfig' before flashing.
+            Leave empty to disable auto-connect (useful for development).
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default ""
+        help
+            WPA2 password for the configured WiFi SSID.
+            Leave empty for open networks. Set via 'idf.py menuconfig'.
+
+endmenu

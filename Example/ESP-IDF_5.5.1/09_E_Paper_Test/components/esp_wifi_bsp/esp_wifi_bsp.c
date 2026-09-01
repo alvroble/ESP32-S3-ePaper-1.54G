@@ -12,8 +12,12 @@
 
 #define TAG "WIFI"
 
-#define WIFI_SSID     "BOOX24"
-#define WIFI_PASSWORD "Jw4iKrgbX9JB"
+// Credentials are configured via 'idf.py menuconfig' -> WiFi Configuration.
+// Defaults are intentionally empty so a fresh build won't leak secrets via
+// a public repo. The first time you flash, run menuconfig and set
+// WIFI_SSID + WIFI_PASSWORD (or override them in sdkconfig).
+#define WIFI_SSID     CONFIG_WIFI_SSID
+#define WIFI_PASSWORD CONFIG_WIFI_PASSWORD
 
 #define MAX_RETRY 10
 
