@@ -11,6 +11,7 @@ idf_component_register(
     esp_netif
     lwip
     esp_adc
+    json
   REQUIRES
     epaper_src
     epaper_port

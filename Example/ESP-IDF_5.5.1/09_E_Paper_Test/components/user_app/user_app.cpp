@@ -24,6 +24,7 @@
 #include "user_app.h"
 #include "driver/gpio.h"
 
+#include "cJSON.h"
 #include "lvgl.h"
 #include "lvgl_epaper_port.h"
 
@@ -33,8 +34,14 @@
 #define SEED_EPOCH          1735689600
 
 #define BTC_URL "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=3600"
-#define HTTP_TIMEOUT_MS  15000
-#define HTTP_BUF_SIZE    4096
+#define COINGECKO_URL "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=1"
+#define HTTP_TIMEOUT_MS  20000
+// Coinbase candles default returns ~21 KB (300 hourly candles); CoinGecko
+// market_chart for days=1 returns ~30 KB (5-minute granularity).
+// 32 KB covers both with margin. Buffer is allocated from PSRAM to avoid
+// eating internal RAM.
+#define HTTP_BUF_SIZE    32768
+#define SNTP_MAX_RETRIES 5       // reduced from 20: many networks block UDP/123
 
 #define VBAT_PWR_PIN GPIO_NUM_17
 #define EPD_PWR_PIN  GPIO_NUM_6
@@ -52,6 +59,16 @@ typedef struct {
     int32_t history[24];
     int count;
 } btc_market_data_t;
+
+// Provider abstraction: each price source has its own URL and JSON schema,
+// so each carries its own parser. Tried in order; first success wins.
+typedef bool (*market_parser_fn)(const char *body, btc_market_data_t *out);
+
+typedef struct {
+    const char       *url;
+    market_parser_fn  parse;
+    const char       *name;
+} price_provider_t;
 
 static lv_obj_t *s_price_label;
 static lv_obj_t *s_sats_label;
@@ -173,9 +190,18 @@ static void epd_power_off(void) { gpio_set_level(EPD_PWR_PIN, 1); }
 // Parse 24 hourly candles from Coinbase Exchange: [[time, low, high, open, close, volume], ...]
 static bool parse_coinbase_candles(const char *body, btc_market_data_t *out)
 {
-    const char *p = strchr(body, '[');
-    if (!p) return false;
-    p++; // skip outer '['
+    cJSON *root = cJSON_Parse(body);
+    if (!root) {
+        const char *err = cJSON_GetErrorPtr();
+        ESP_LOGW(TAG, "JSON parse failed near: %.32s", err ? err : "(null)");
+        return false;
+    }
+
+    if (!cJSON_IsArray(root)) {
+        ESP_LOGW(TAG, "expected JSON array at root, got type=%d", root->type);
+        cJSON_Delete(root);
+        return false;
+    }
 
     double latest_close = 0.0;
     double oldest_open = 0.0;
@@ -184,40 +210,46 @@ static bool parse_coinbase_candles(const char *body, btc_market_data_t *out)
     int count = 0;
     double temp_closes[24];
 
-    while (*p && count < 24) {
-        p = strchr(p, '[');
-        if (!p) break;
-        p++; // skip inner '['
+    cJSON *candle = NULL;
+    cJSON_ArrayForEach(candle, root) {
+        if (count >= 24) break;
 
-        // Format: [ time, low, high, open, close, volume ]
-        strtol(p, (char **)&p, 10);
-        if (*p == ',') p++;
-        double low = strtod(p, (char **)&p);
-        if (*p == ',') p++;
-        double high = strtod(p, (char **)&p);
-        if (*p == ',') p++;
-        double open = strtod(p, (char **)&p);
-        if (*p == ',') p++;
-        double close = strtod(p, (char **)&p);
+        // Schema: [ time, low, high, open, close, volume ]
+        if (!cJSON_IsArray(candle) || cJSON_GetArraySize(candle) < 5) break;
 
+        cJSON *low_item   = cJSON_GetArrayItem(candle, 1);
+        cJSON *high_item  = cJSON_GetArrayItem(candle, 2);
+        cJSON *open_item  = cJSON_GetArrayItem(candle, 3);
+        cJSON *close_item = cJSON_GetArrayItem(candle, 4);
+
+        if (!cJSON_IsNumber(low_item)  || !cJSON_IsNumber(high_item) ||
+            !cJSON_IsNumber(open_item) || !cJSON_IsNumber(close_item)) break;
+
+        double low   = low_item->valuedouble;
+        double high  = high_item->valuedouble;
+        double open  = open_item->valuedouble;
+        double close = close_item->valuedouble;
+
+        // Sanity check: discard candles with non-positive prices.
         if (low <= 0 || high <= 0 || close <= 0) break;
 
-        if (count == 0) {
-            latest_close = close;
-        }
+        // Coinbase returns candles newest-first: first candle = most recent close.
+        if (count == 0) latest_close = close;
         oldest_open = open;
 
         if (high > max_h) max_h = high;
-        if (low < min_l) min_l = low;
+        if (low  < min_l) min_l = low;
 
         temp_closes[count] = close;
         count++;
-
-        p = strchr(p, ']');
-        if (p) p++;
     }
 
-    if (count < 12) return false;
+    cJSON_Delete(root);
+
+    if (count < 12) {
+        ESP_LOGW(TAG, "only %d valid candles (need >= 12)", count);
+        return false;
+    }
 
     out->current_price = latest_close;
     out->high_24h = max_h;
@@ -229,9 +261,91 @@ static bool parse_coinbase_candles(const char *body, btc_market_data_t *out)
     }
     out->count = count;
 
-    // Arrange chronological: index 0 is oldest (left), index count-1 is newest (right)
+    // Arrange chronological: index 0 is oldest (left), index count-1 is newest (right).
     for (int i = 0; i < count; i++) {
         out->history[i] = (int32_t)round(temp_closes[count - 1 - i]);
+    }
+
+    return true;
+}
+
+// Parse CoinGecko /coins/{id}/market_chart response.
+// Schema: { "prices": [[ts_ms, price_usd], ...], "market_caps": [...], "total_volumes": [...] }
+// CoinGecko returns hourly points for days=1 (typically 25 points: current + 24 history).
+// Already in chronological order (oldest first), so no reversal needed.
+static bool parse_coingecko_market(const char *body, btc_market_data_t *out)
+{
+    cJSON *root = cJSON_Parse(body);
+    if (!root) {
+        const char *err = cJSON_GetErrorPtr();
+        ESP_LOGW(TAG, "CoinGecko JSON parse failed near: %.32s", err ? err : "(null)");
+        return false;
+    }
+
+    cJSON *prices = cJSON_GetObjectItem(root, "prices");
+    if (!cJSON_IsArray(prices)) {
+        ESP_LOGW(TAG, "CoinGecko: 'prices' missing or not an array (type=%d)",
+                 prices ? prices->type : -1);
+        cJSON_Delete(root);
+        return false;
+    }
+
+    int total = cJSON_GetArraySize(prices);
+    if (total < 12) {
+        ESP_LOGW(TAG, "CoinGecko: only %d prices (need >= 12)", total);
+        cJSON_Delete(root);
+        return false;
+    }
+
+    // Take the most recent 24 points (CoinGecko often returns 25 incl. "now")
+    int start = total > 24 ? total - 24 : 0;
+
+    double latest_close = 0.0;
+    double oldest_open = 0.0;
+    double max_h = 0.0;
+    double min_l = 1e9;
+    int count = 0;
+    double temp_closes[24];
+
+    for (int i = start; i < total && count < 24; i++) {
+        cJSON *point = cJSON_GetArrayItem(prices, i);
+        if (!cJSON_IsArray(point) || cJSON_GetArraySize(point) < 2) continue;
+
+        cJSON *price = cJSON_GetArrayItem(point, 1);
+        if (!cJSON_IsNumber(price)) continue;
+
+        double p = price->valuedouble;
+        if (p <= 0) continue;
+
+        if (count == 0) latest_close = p;  // last point in window = most recent
+        oldest_open = p;                    // first point in window = oldest in window
+        if (p > max_h) max_h = p;
+        if (p < min_l) min_l = p;
+
+        temp_closes[count] = p;
+        count++;
+    }
+
+    cJSON_Delete(root);
+
+    if (count < 12) {
+        ESP_LOGW(TAG, "CoinGecko: only %d valid prices after filter", count);
+        return false;
+    }
+
+    out->current_price = latest_close;
+    out->high_24h = max_h;
+    out->low_24h = min_l;
+    if (oldest_open > 0) {
+        out->change_24h = ((latest_close - oldest_open) / oldest_open) * 100.0;
+    } else {
+        out->change_24h = 0.0;
+    }
+    out->count = count;
+
+    // Oldest-first, no reversal.
+    for (int i = 0; i < count; i++) {
+        out->history[i] = (int32_t)round(temp_closes[i]);
     }
 
     return true;
@@ -250,15 +364,35 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
-static bool fetch_btc_market_data(btc_market_data_t *out)
+// Provider chain: tried in order, first success wins. Different CDNs/IPs
+// give us resilience against any single endpoint being blocked or rate-limited.
+static const price_provider_t s_providers[] = {
+    {
+        .url   = BTC_URL,                       // Cloudflare CDN
+        .parse = parse_coinbase_candles,
+        .name  = "coinbase",
+    },
+    {
+        .url   = COINGECKO_URL,                 // Fastly/Google CDN
+        .parse = parse_coingecko_market,
+        .name  = "coingecko",
+    },
+};
+#define PROVIDER_COUNT (sizeof(s_providers) / sizeof(s_providers[0]))
+
+static bool fetch_from_provider(const price_provider_t *provider, btc_market_data_t *out)
 {
-    http_buf_t *buf = (http_buf_t *)malloc(sizeof(http_buf_t));
+    // Prefer PSRAM for the 32 KB response buffer: keeps internal RAM free for
+    // Wi-Fi/LVGL. Fall back to internal heap if PSRAM is not initialized.
+    http_buf_t *buf = (http_buf_t *)heap_caps_malloc(sizeof(http_buf_t),
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) buf = (http_buf_t *)malloc(sizeof(http_buf_t));
     if (!buf) return false;
     buf->len = 0;
     buf->data[0] = '\0';
 
     esp_http_client_config_t cfg = {
-        .url = BTC_URL,
+        .url = provider->url,
         .timeout_ms = HTTP_TIMEOUT_MS,
         .event_handler = http_event_handler,
         .user_data = buf,
@@ -279,16 +413,43 @@ static bool fetch_btc_market_data(btc_market_data_t *out)
     if (err == ESP_OK) {
         int s = esp_http_client_get_status_code(c);
         if (s == 200 && buf->len > 0) {
-            ok = parse_coinbase_candles(buf->data, out);
+            ok = provider->parse(buf->data, out);
+            if (!ok) {
+                ESP_LOGW(TAG, "[%s] parse failed (HTTP %d, %d bytes)", provider->name, s, buf->len);
+            }
         } else {
-            ESP_LOGW(TAG, "HTTP status: %d, len: %d", s, buf->len);
+            ESP_LOGW(TAG, "[%s] HTTP status %d, len %d", provider->name, s, buf->len);
         }
     } else {
-        ESP_LOGW(TAG, "fetch: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "[%s] fetch: %s", provider->name, esp_err_to_name(err));
     }
     esp_http_client_cleanup(c);
     free(buf);
     return ok;
+}
+
+static bool fetch_btc_market_data(btc_market_data_t *out)
+{
+    btc_market_data_t tmp = { 0 };
+
+    for (int i = 0; i < (int)PROVIDER_COUNT; i++) {
+        if (i > 0) {
+            ESP_LOGW(TAG, "fallback to %s (%d/%d)",
+                     s_providers[i].name, i + 1, (int)PROVIDER_COUNT);
+            vTaskDelay(pdMS_TO_TICKS(2000));   // 2s between providers
+        }
+        if (fetch_from_provider(&s_providers[i], &tmp)) {
+            *out = tmp;
+            ESP_LOGI(TAG, "[%s] BTC = %.2f (24h: %.2f%%, H: %.2f, L: %.2f, n=%d)",
+                     s_providers[i].name,
+                     tmp.current_price, tmp.change_24h,
+                     tmp.high_24h, tmp.low_24h, tmp.count);
+            return true;
+        }
+    }
+
+    ESP_LOGE(TAG, "all %d providers failed", (int)PROVIDER_COUNT);
+    return false;
 }
 
 static void build_ui(void)
@@ -523,9 +684,8 @@ static void enter_deep_sleep(void)
 {
     ESP_LOGI(TAG, "Entering Deep Sleep for %d min...", SLEEP_DURATION_SEC / 60);
 
-    // 1. Shutdown Wi-Fi cleanly
-    esp_wifi_disconnect();
-    esp_wifi_stop();
+    // 1. Shutdown Wi-Fi cleanly (stop + deinit, not just disconnect/stop)
+    espwifi_Deinit();
 
     // 2. Ensure EPD power is OFF
     epaper_port_sleep();
@@ -572,10 +732,12 @@ static void epd_refresh_task(void *arg)
     esp_sntp_setservername(2, "time.cloudflare.com");
     esp_sntp_init();
 
-    // Wait until internet connectivity is verified by an NTP reply (or max 20s)
+    // Wait until internet connectivity is verified by an NTP reply (or max 5s).
+    // SNTP wait shortened from 20s -> 5s: many home networks block UDP/123
+    // outbound, so a long wait just burns battery before the HTTPS call fails too.
     int sntp_retry = 0;
-    while (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++sntp_retry <= 20) {
-        ESP_LOGI(TAG, "Waiting for network route & clock sync... (%d/20)", sntp_retry);
+    while (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++sntp_retry <= SNTP_MAX_RETRIES) {
+        ESP_LOGI(TAG, "Waiting for network route & clock sync... (%d/%d)", sntp_retry, SNTP_MAX_RETRIES);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 

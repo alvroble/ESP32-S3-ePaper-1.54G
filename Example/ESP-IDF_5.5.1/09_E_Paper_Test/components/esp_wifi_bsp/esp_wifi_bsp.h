@@ -13,6 +13,7 @@ extern "C" {
 #define WIFI_FAIL_BIT      BIT1
 
 void espwifi_Init(void);
+void espwifi_Deinit(void);
 EventGroupHandle_t espwifi_GetEventGroup(void);
 bool espwifi_IsConnected(void);
 

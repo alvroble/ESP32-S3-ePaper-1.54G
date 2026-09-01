@@ -17,9 +17,15 @@
 
 #define MAX_RETRY 10
 
-static EventGroupHandle_t s_wifi_event_group;
+static EventGroupHandle_t s_wifi_event_group = NULL;
 static int s_retry_num = 0;
 static bool s_connected = false;
+
+// RTC_DATA_ATTR: survives deep sleep, cleared on power cycle.
+// Gates the expensive one-time init (NVS, netif, event loop, handlers)
+// which would otherwise be re-registered on every wake, leaking memory
+// and eventually crashing the Wi-Fi stack after dozens of cycles.
+RTC_DATA_ATTR static bool s_wifi_bsd_initialized = false;
 
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data)
@@ -47,28 +53,47 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 
 void espwifi_Init(void)
 {
-    s_wifi_event_group = xEventGroupCreate();
+    // ---- One-time init (first boot only) ----
+    // NVS, netif, event loop, default Wi-Fi STA netif, and event handlers
+    // all persist across deep sleep when not explicitly deinit'd. Re-creating
+    // them on every wake leaked memory and duplicated handlers, which is
+    // what caused the device to die after a few hours of 5-min cycles.
+    if (!s_wifi_bsd_initialized) {
+        ESP_ERROR_CHECK(nvs_flash_init());
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        esp_netif_create_default_wifi_sta();
 
-    ESP_ERROR_CHECK(nvs_flash_init());
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+        esp_event_handler_instance_register(WIFI_EVENT,
+                                            ESP_EVENT_ANY_ID,
+                                            &event_handler,
+                                            NULL,
+                                            NULL);
+        esp_event_handler_instance_register(IP_EVENT,
+                                            IP_EVENT_STA_GOT_IP,
+                                            &event_handler,
+                                            NULL,
+                                            NULL);
 
+        s_wifi_bsd_initialized = true;
+        ESP_LOGI(TAG, "one-time WiFi BSP init complete");
+    }
+
+    // ---- Per-wake init ----
+    // EventGroup lives in regular RAM (preserved across deep sleep): reuse
+    // the handle, just clear the bits from the previous cycle.
+    if (s_wifi_event_group == NULL) {
+        s_wifi_event_group = xEventGroupCreate();
+    } else {
+        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+    }
+    s_retry_num = 0;
+    s_connected = false;
+
+    // Wi-Fi driver itself must be re-init'd every wake: its ~30 KB of
+    // internal buffers live in regular RAM and need fresh init/start.
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    esp_event_handler_instance_t instance_any_id;
-    esp_event_handler_instance_t instance_got_ip;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                        ESP_EVENT_ANY_ID,
-                                                        &event_handler,
-                                                        NULL,
-                                                        &instance_any_id));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                        IP_EVENT_STA_GOT_IP,
-                                                        &event_handler,
-                                                        NULL,
-                                                        &instance_got_ip));
 
     wifi_config_t wifi_config = { 0 };
     strncpy((char *)wifi_config.sta.ssid, WIFI_SSID, sizeof(wifi_config.sta.ssid));
@@ -81,6 +106,16 @@ void espwifi_Init(void)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     ESP_LOGI(TAG, "espwifi_Init finished, waiting for IP...");
+}
+
+void espwifi_Deinit(void)
+{
+    // Stop and deinit the Wi-Fi driver before deep sleep. Without
+    // esp_wifi_deinit() the driver's internal state (scanned AP list,
+    // tx/rx buffers, ~30 KB) is leaked across every wake cycle.
+    esp_wifi_disconnect();
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_stop());
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_deinit());
 }
 
 EventGroupHandle_t espwifi_GetEventGroup(void)
