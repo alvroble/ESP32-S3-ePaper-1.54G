@@ -97,13 +97,14 @@ void espwifi_Init(void)
     }
 
     // ---- Per-wake init ----
-    // EventGroup lives in regular RAM (preserved across deep sleep): reuse
-    // the handle, just clear the bits from the previous cycle.
-    if (s_wifi_event_group == NULL) {
-        s_wifi_event_group = xEventGroupCreate();
-    } else {
-        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
-    }
+    // The EventGroup is a FreeRTOS object whose state lives in the kernel's
+    // RAM. After a deep-sleep wake, the kernel re-initialises -- the OLD
+    // handle in `s_wifi_event_group` still points to a block of regular RAM
+    // (deep sleep preserves RAM), but the kernel no longer recognises it.
+    // Attempting to reuse it produces silent hangs or memory corruption.
+    // The fix is to always create a fresh EventGroup; the leaked handle is
+    // a few dozen bytes per wake, which is negligible.
+    s_wifi_event_group = xEventGroupCreate();
     s_retry_num = 0;
     s_connected = false;
 
