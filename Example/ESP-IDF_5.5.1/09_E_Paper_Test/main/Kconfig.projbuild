@@ -16,3 +16,61 @@ menu "WiFi Configuration"
             Leave empty for open networks. Set via 'idf.py menuconfig'.
 
 endmenu
+
+menu "Display Configuration"
+
+    config TIMEZONE
+        string "POSIX TZ string (local time zone)"
+        default "CET-1CEST,M3.5.0,M10.5.0/3"
+        help
+            POSIX TZ database string that drives the clock shown on the
+            e-paper footer. Affects only display formatting; the SNTP
+            sync always uses UTC internally.
+            Examples:
+              Madrid (CET/CEST)        CET-1CEST,M3.5.0,M10.5.0/3
+              Berlin (CET/CEST)        CET-1CEST,M3.5.0,M10.5.0/2
+              New York (EST/EDT)       EST5EDT,M3.2.0,M11.1.0
+              UTC                      UTC0
+              Buenos Aires (UTC-3)     ART3
+              Tokyo (JST)              JST-9
+            Find yours at https://github.com/eggert/tz/blob/main/zone.tab
+
+endmenu
+
+menu "Refresh Schedule"
+
+    config ACTIVE_HOUR_START
+        int "Active hours start (0-23, inclusive)"
+        range 0 23
+        default 8
+        help
+            Beginning of the "active" window during which the ticker
+            refreshes at ACTIVE_SLEEP_SEC. Outside this window it
+            refreshes at QUIET_SLEEP_SEC (much longer) to save battery.
+
+    config ACTIVE_HOUR_END
+        int "Active hours end (0-23, exclusive)"
+        range 0 23
+        default 23
+        help
+            End of the "active" window (exclusive). For an 8:00-23:00
+            window set start=8 and end=23.
+
+    config ACTIVE_SLEEP_SEC
+        int "Sleep duration during active hours (seconds)"
+        range 60 3600
+        default 300
+        help
+            Deep-sleep length when the local clock is within the active
+            window. 300 (5 min) is a sensible default for a price ticker.
+
+    config QUIET_SLEEP_SEC
+        int "Sleep duration during quiet hours (seconds)"
+        range 60 86400
+        default 1800
+        help
+            Deep-sleep length when the local clock is outside the active
+            window. 1800 (30 min) saves ~5x battery vs 5-min cadence
+            during the night when nobody is looking at the ticker.
+
+endmenu

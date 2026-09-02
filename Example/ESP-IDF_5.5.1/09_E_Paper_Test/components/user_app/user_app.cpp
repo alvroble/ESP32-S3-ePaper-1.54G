@@ -637,22 +637,23 @@ static void update_ui_market_data(const btc_market_data_t *data, bool is_stale)
     lv_label_set_text(s_high_label, buf);
     lv_obj_align(s_high_label, LV_ALIGN_TOP_RIGHT, -8, 156);
 
-    // 6. Footer Timestamp (explicit UTC). When data is stale (served from
-    //    RTC cache because every provider failed), prefix "STALE" and switch
-    //    the text to e-paper red so the user immediately sees the data is
+    // 6. Footer Timestamp in LOCAL time (set via CONFIG_TIMEZONE in
+    //    Kconfig.projbuild). When data is stale (served from the RTC cache
+    //    because every provider failed), prefix "STALE" and switch the
+    //    text to e-paper red so the user immediately sees the data is
     //    older than the current cycle.
     struct tm tm_data;
     time_t time_to_show = is_stale ? s_last_success : time(NULL);
-    gmtime_r(&time_to_show, &tm_data);
+    localtime_r(&time_to_show, &tm_data);
 
     if (is_stale) {
-        snprintf(buf, sizeof(buf), "STALE %02d:%02d UTC",
+        snprintf(buf, sizeof(buf), "STALE %02d:%02d",
                  tm_data.tm_hour, tm_data.tm_min);
-        // Pure red in RGB565 → e-paper red (saturation 255, well above the
+        // Pure red in RGB565 -> e-paper red (saturation 255, well above the
         // 45 threshold in the conversion algorithm).
         lv_obj_set_style_text_color(s_status_label, lv_color_hex(0xFF0000), 0);
     } else {
-        snprintf(buf, sizeof(buf), "%02d:%02d UTC",
+        snprintf(buf, sizeof(buf), "%02d:%02d",
                  tm_data.tm_hour, tm_data.tm_min);
         lv_obj_set_style_text_color(s_status_label, lv_color_white(), 0);
     }
@@ -840,6 +841,13 @@ static void epd_refresh_task(void *arg)
 void user_app_init(void)
 {
     ESP_LOGI(TAG, "BTC ticker (LVGL) starting");
+
+    // Apply the configured POSIX TZ string BEFORE any call to localtime_r.
+    // setenv + tzset make the new zone visible to the C runtime; SNTP still
+    // uses UTC internally, so this is purely a display-side concern.
+    setenv("TZ", CONFIG_TIMEZONE, 1);
+    tzset();
+    ESP_LOGI(TAG, "timezone: %s", CONFIG_TIMEZONE);
 
     // Enable detailed debug logs
     esp_log_level_set("esp-tls", ESP_LOG_VERBOSE);

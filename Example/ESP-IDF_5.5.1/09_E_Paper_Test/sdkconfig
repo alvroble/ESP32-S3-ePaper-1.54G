@@ -598,9 +598,24 @@ CONFIG_PARTITION_TABLE_MD5=y
 #
 # WiFi Configuration
 #
-CONFIG_WIFI_SSID=""
-CONFIG_WIFI_PASSWORD=""
+CONFIG_WIFI_SSID="BOOX24"
+CONFIG_WIFI_PASSWORD="Jw4iKrgbX9JB"
 # end of WiFi Configuration
+
+#
+# Display Configuration
+#
+CONFIG_TIMEZONE="CET-1CEST,M3.5.0,M10.5.0/3"
+# end of Display Configuration
+
+#
+# Refresh Schedule
+#
+CONFIG_ACTIVE_HOUR_START=8
+CONFIG_ACTIVE_HOUR_END=23
+CONFIG_ACTIVE_SLEEP_SEC=300
+CONFIG_QUIET_SLEEP_SEC=1800
+# end of Refresh Schedule
 
 #
 # Compiler options
