@@ -80,21 +80,35 @@ void espwifi_Init(void)
     // ESP_ERROR_CHECK_WITHOUT_ABORT so a "already exists" error from the
     // underlying API does not crash the firmware -- it just logs and
     // continues with whatever was there before.
-    if (!s_wifi_bsd_initialized) {
-        // esp_netif_create_default_wifi_sta returns esp_netif_t*, not esp_err_t
-        // so we can't use ESP_ERROR_CHECK_WITHOUT_ABORT -- check explicitly.
-        if (esp_netif_create_default_wifi_sta() == NULL) {
-            ESP_LOGW(TAG, "default WiFi STA netif already exists (stale gate)");
-        }
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_instance_register(
-                WIFI_EVENT, ESP_EVENT_ANY_ID,
-                &event_handler, NULL, NULL));
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_instance_register(
-                IP_EVENT, IP_EVENT_STA_GOT_IP,
-                &event_handler, NULL, NULL));
-        s_wifi_bsd_initialized = true;
-        ESP_LOGI(TAG, "one-time WiFi BSP init complete");
+    // ---- Always register event handlers on the CURRENT default loop ----
+    // esp_event_loop_create_default() is NOT idempotent in ESP-IDF 5.x: each
+    // call creates a brand-new loop and overwrites the s_default_loop
+    // pointer. After a deep-sleep wake, the kernel re-initialises -- the
+    // loop created in cycle 1 still has its struct in regular RAM but its
+    // task is dead, so events queued there are never processed.
+    //
+    // The WiFi driver posts events with ESP_EVENT_ANY_BASE which delivers
+    // to ALL loops. The fresh loop2 created on this wake WILL receive
+    // events, but it has zero handlers unless we register them again.
+    // Gating registration behind RTC_DATA_ATTR (the previous approach)
+    // was the bug: cycle 2 saw the gate as 'true' and skipped registration
+    // on loop2, leaving loop2 silent.
+    //
+    // The fix: always register. If the same handler was already registered
+    // on this loop (degenerate case), ESP-IDF appends a duplicate entry.
+    // Our handler is idempotent (sets EventGroup bits, increments a retry
+    // counter) so duplicates only cause redundant work, not incorrect
+    // behaviour.
+    if (esp_netif_create_default_wifi_sta() == NULL) {
+        ESP_LOGW(TAG, "default WiFi STA netif already exists");
     }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_instance_register(
+            WIFI_EVENT, ESP_EVENT_ANY_ID,
+            &event_handler, NULL, NULL));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_handler_instance_register(
+            IP_EVENT, IP_EVENT_STA_GOT_IP,
+            &event_handler, NULL, NULL));
+    ESP_LOGI(TAG, "WiFi handlers registered on current event loop");
 
     // ---- Per-wake init ----
     // The EventGroup is a FreeRTOS object whose state lives in the kernel's
