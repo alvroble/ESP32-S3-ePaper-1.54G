@@ -487,6 +487,14 @@ static bool fetch_btc_market_data(btc_market_data_t *out)
 
 static void build_ui(void)
 {
+    // UI objects live in LVGL's heap which is regular RAM and survives deep
+    // sleep. If the labels still exist (s_price_label non-NULL), the UI was
+    // built in a previous wake -- skip to avoid leaking duplicate objects.
+    if (s_price_label != NULL) {
+        ESP_LOGI(TAG, "UI already built, skipping (deep sleep wake)");
+        return;
+    }
+
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
     lv_obj_set_style_pad_all(scr, 0, 0);

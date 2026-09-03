@@ -114,41 +114,61 @@ void lvgl_epaper_init(void)
 {
     ESP_LOGI(TAG, "init");
 
-    // Allocate extra room so we can align the buffer to a 64-byte boundary
-    // (LV_DRAW_BUF_ALIGN / cache-line). SPIRAM alloc does not guarantee this.
-    const size_t fb_bytes = EPD_W * EPD_H * sizeof(uint16_t);
-    const size_t alloc_bytes = fb_bytes + 64;
-    s_fb_raw = (uint16_t *)heap_caps_malloc(alloc_bytes, MALLOC_CAP_SPIRAM);
-    if (!s_fb_raw) s_fb_raw = (uint16_t *)malloc(alloc_bytes);
-    if (!s_fb_raw) {
-        ESP_LOGE(TAG, "fb alloc failed");
-        return;
-    }
-    uintptr_t aligned = ((uintptr_t)s_fb_raw + 63) & ~(uintptr_t)63;
-    s_fb = (uint16_t *)aligned;
-    memset(s_fb, 0xFF, fb_bytes);  // white
+    // ---- One-time init (first boot per chip) ----
+    // The framebuffer, e-paper buffer, LVGL core state, and display handle
+    // all live in regular RAM which deep sleep preserves. We detect "first
+    // boot" by checking whether s_fb_raw already has a valid allocation.
+    // After a true cold boot (power cycle, OTA, fresh flash) the static is
+    // NULL; after a deep-sleep wake it still points to the cycle-1 buffer.
+    //
+    // The bug this fixes: the previous version unconditionally allocated
+    // ~90 KB of PSRAM per wake, called lv_init() again, created a new LVGL
+    // display, and handed the GPU/timer subsystem a new mutex. After a few
+    // hundred wakes PSRAM fragmented, LVGL's heap saturated with orphaned
+    // display objects, and the device crashed mid-cycle.
+    if (s_fb_raw == NULL) {
+        // Allocate extra room so we can align the buffer to a 64-byte
+        // boundary (LV_DRAW_BUF_ALIGN / cache-line). SPIRAM alloc does
+        // not guarantee this.
+        const size_t fb_bytes = EPD_W * EPD_H * sizeof(uint16_t);
+        const size_t alloc_bytes = fb_bytes + 64;
+        s_fb_raw = (uint16_t *)heap_caps_malloc(alloc_bytes, MALLOC_CAP_SPIRAM);
+        if (!s_fb_raw) s_fb_raw = (uint16_t *)malloc(alloc_bytes);
+        if (!s_fb_raw) {
+            ESP_LOGE(TAG, "fb alloc failed");
+            return;
+        }
+        uintptr_t aligned = ((uintptr_t)s_fb_raw + 63) & ~(uintptr_t)63;
+        s_fb = (uint16_t *)aligned;
+        memset(s_fb, 0xFF, fb_bytes);  // white
 
-    int row_bytes = (EPD_W % 4 == 0) ? (EPD_W / 4) : (EPD_W / 4 + 1);
-    s_epd_buf = (uint8_t *)heap_caps_malloc(row_bytes * EPD_H,
-                                            MALLOC_CAP_SPIRAM);
-    if (!s_epd_buf) s_epd_buf = (uint8_t *)malloc(row_bytes * EPD_H);
-    if (!s_epd_buf) {
-        ESP_LOGE(TAG, "epd buf alloc failed");
-        return;
+        int row_bytes = (EPD_W % 4 == 0) ? (EPD_W / 4) : (EPD_W / 4 + 1);
+        s_epd_buf = (uint8_t *)heap_caps_malloc(row_bytes * EPD_H,
+                                                MALLOC_CAP_SPIRAM);
+        if (!s_epd_buf) s_epd_buf = (uint8_t *)malloc(row_bytes * EPD_H);
+        if (!s_epd_buf) {
+            ESP_LOGE(TAG, "epd buf alloc failed");
+            return;
+        }
+
+        lv_init();
+        lv_tick_set_cb(lvgl_tick_get);
+
+        s_disp = lv_display_create(EPD_W, EPD_H);
+        lv_display_set_flush_cb(s_disp, lvgl_flush_cb);
+        // Single buffer mode: lvgl renders directly into s_fb.
+        lv_display_set_buffers(s_disp, s_fb, NULL,
+                               EPD_W * EPD_H * sizeof(uint16_t),
+                               LV_DISPLAY_RENDER_MODE_FULL);
+    } else {
+        ESP_LOGI(TAG, "LVGL state preserved from previous boot (deep sleep wake)");
     }
 
+    // ---- Per-wake init ----
+    // The mutex and the tick task are FreeRTOS objects whose kernel state
+    // is re-initialised on every wake. Their handles in regular RAM become
+    // stale (same pattern as the Wi-Fi EventGroup). Always recreate.
     s_mutex = xSemaphoreCreateRecursiveMutex();
-
-    lv_init();
-    lv_tick_set_cb(lvgl_tick_get);
-
-    s_disp = lv_display_create(EPD_W, EPD_H);
-    lv_display_set_flush_cb(s_disp, lvgl_flush_cb);
-    // Single buffer mode: lvgl renders directly into s_fb.
-    lv_display_set_buffers(s_disp, s_fb, NULL,
-                           EPD_W * EPD_H * sizeof(uint16_t),
-                           LV_DISPLAY_RENDER_MODE_FULL);
-
     xTaskCreate(lvgl_tick_task, "lvgl", 4096, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "ready");
